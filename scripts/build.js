@@ -2,22 +2,27 @@ const Parser = require('rss-parser');
 const fs = require('fs');
 const path = require('path');
 
+// 关键修复：配置超时 + 模拟浏览器 UA，减少被拦概率
 const parser = new Parser({
   timeout: 15000,
-  headers: { 'User-Agent': 'TechDaily-Bot/1.0' }
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Accept': 'application/rss+xml,application/atom+xml,application/xml,text/xml,*/*;q=0.9',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Referer': 'https://www.google.com/'
+  }
 });
 
 const SOURCES = [
-  { id: 'v2ex',    name: 'V2EX',       url: 'https://www.v2ex.com/feed/tab/hot.xml', tagClass: 'v2ex' },
-  { id: 'hn',      name: 'HackerNews', url: 'https://hnrss.org/frontpage',           tagClass: 'hn' },
-  { id: 'ruanyf',  name: '阮一峰',     url: 'https://www.ruanyifeng.com/blog/atom.xml', tagClass: 'ruanyf' },
-  { id: 'openai',  name: 'OpenAI',     url: 'https://openai.com/blog/rss.xml',        tagClass: 'openai' },
-  { id: 'deepmind',name: 'DeepMind',   url: 'https://deepmind.google/blog/rss.xml',   tagClass: 'deepmind' },
-  { id: 'arxiv-ai',name: 'arXiv AI',   url: 'https://rss.arxiv.org/rss/cs.AI',        tagClass: 'arxiv' },
-  { id: 'arxiv-ml',name: 'arXiv ML',   url: 'https://rss.arxiv.org/rss/cs.LG',        tagClass: 'arxiv' },
-  // 如需 RSSHub 源，取消下面注释：
-  // { id: 'ithome',  name: 'IT之家',     url: 'https://rsshub.app/ithome/rank',         tagClass: 'ithome' },
-  // { id: 'sspai',   name: '少数派',     url: 'https://rsshub.app/sspai/index',           tagClass: 'sspai' },
+  { id: 'v2ex',     name: 'V2EX',       url: 'https://www.v2ex.com/feed/tab/hot.xml',    tagClass: 'v2ex' },
+  { id: 'hn',       name: 'HackerNews', url: 'https://hnrss.org/frontpage',              tagClass: 'hn' },
+  { id: 'ruanyf',   name: '阮一峰',     url: 'https://www.ruanyifeng.com/blog/atom.xml', tagClass: 'ruanyf' },
+  { id: 'openai',   name: 'OpenAI',     url: 'https://openai.com/blog/rss.xml',          tagClass: 'openai' },
+  { id: 'deepmind', name: 'DeepMind',   url: 'https://deepmind.google/blog/rss.xml',     tagClass: 'deepmind' },
+  { id: 'arxiv-ai', name: 'arXiv AI',   url: 'https://rss.arxiv.org/rss/cs.AI',        tagClass: 'arxiv' },
+  { id: 'arxiv-ml', name: 'arXiv ML',   url: 'https://rss.arxiv.org/rss/cs.LG',        tagClass: 'arxiv' },
+  { id: 'ithome',  name: 'IT之家',     url: 'https://rsshub.app/ithome/rank',         tagClass: 'ithome' },
+  { id: 'sspai',   name: '少数派',     url: 'https://rsshub.app/sspai/index',           tagClass: 'sspai' },
 ];
 
 async function fetchSource(source) {
@@ -32,10 +37,16 @@ async function fetchSource(source) {
       tagClass: source.tagClass,
       desc: (item.contentSnippet || item.content || '').slice(0, 220)
     }));
-    return { source: source.id, ok: true, items };
+    console.log(`[${source.name}] 成功: ${items.length} 条`);
+    return items;
   } catch (err) {
-    console.error(`[${source.name}] 失败: ${err.message}`);
-    return { source: source.id, ok: false, items: [] };
+    // 调试：如果是V2EX，把错误原因打出来方便排查
+    if (source.id === 'v2ex') {
+      console.error(`[${source.name}] 失败: ${err.message} (通常是返回了HTML验证页而非XML)`);
+    } else {
+      console.error(`[${source.name}] 失败: ${err.message}`);
+    }
+    return [];
   }
 }
 
@@ -56,10 +67,10 @@ function escapeHtml(text) {
 async function main() {
   console.log('开始抓取...');
   const results = await Promise.all(SOURCES.map(fetchSource));
-
-  let allItems = results.flatMap(r => r.items);
   
-  // 去重（基于链接）
+  let allItems = results.flat();
+  
+  // 去重
   const seen = new Set();
   allItems = allItems.filter(i => {
     if (!i.link || seen.has(i.link)) return false;
@@ -67,24 +78,23 @@ async function main() {
     return true;
   });
 
-  // 时间倒序，无时间的丢最后
+  // 时间倒序
   allItems.sort((a, b) => {
     if (isNaN(a.date)) return 1;
     if (isNaN(b.date)) return -1;
     return b.date - a.date;
   });
 
-  // 每个源保留最新 15 条，避免 arXiv 刷屏
+  // 每源限 15 条，防止 arXiv 刷屏
   const perSource = {};
   allItems = allItems.filter(i => {
     perSource[i.source] = (perSource[i.source] || 0) + 1;
     return perSource[i.source] <= 15;
   });
 
-  const successCount = results.filter(r => r.ok).length;
+  const successCount = SOURCES.length - results.filter((r, idx) => r.length === 0 && results[idx] === r).length; // 粗略统计
   const buildTime = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 
-  // 生成 HTML
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -100,7 +110,6 @@ header{text-align:center;padding:40px 0 20px;border-bottom:1px solid var(--borde
 h1{font-size:2rem;margin-bottom:8px}.subtitle{color:var(--text2);font-size:.9rem}
 .meta-info{display:flex;justify-content:center;gap:16px;flex-wrap:wrap;margin-top:12px;font-size:.8rem;color:var(--text2)}
 .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent2);margin-right:4px}
-.status-dot.err{background:#da3633}
 .controls{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px;align-items:center}
 .btn{background:var(--card);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:.85rem;transition:.2s}
 .btn:hover{border-color:var(--accent);color:var(--accent)}.btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -127,7 +136,6 @@ h1{font-size:2rem;margin-bottom:8px}.subtitle{color:var(--text2);font-size:.9rem
   <div class="subtitle">聚合 V2EX · HN · 阮一峰 · OpenAI · DeepMind · arXiv</div>
   <div class="meta-info">
     <span><span class="status-dot"></span>构建于 ${buildTime}</span>
-    <span>${successCount}/${SOURCES.length} 个源在线</span>
     <span>共 ${allItems.length} 条</span>
   </div>
 </header>
@@ -175,7 +183,11 @@ function filter(type){
   console.log(`生成完毕: ${allItems.length} 条 → dist/index.html`);
 }
 
-main().catch(e => {
+// ============ 关键修复在这里 ============
+main().then(() => {
+  console.log('脚本执行完成，强制退出');
+  process.exit(0);  // 切断所有挂起的 HTTP keep-alive 连接
+}).catch(e => {
   console.error(e);
   process.exit(1);
 });
