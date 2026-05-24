@@ -2,7 +2,6 @@ const Parser = require('rss-parser');
 const fs = require('fs');
 const path = require('path');
 
-// 关键修复：配置超时 + 模拟浏览器 UA，减少被拦概率
 const parser = new Parser({
   timeout: 15000,
   headers: {
@@ -21,8 +20,6 @@ const SOURCES = [
   { id: 'deepmind', name: 'DeepMind',   url: 'https://deepmind.google/blog/rss.xml',     tagClass: 'deepmind' },
   { id: 'arxiv-ai', name: 'arXiv AI',   url: 'https://rss.arxiv.org/rss/cs.AI',        tagClass: 'arxiv' },
   { id: 'arxiv-ml', name: 'arXiv ML',   url: 'https://rss.arxiv.org/rss/cs.LG',        tagClass: 'arxiv' },
-  { id: 'ithome',  name: 'IT之家',     url: 'https://rsshub.app/ithome/rank',         tagClass: 'ithome' },
-  { id: 'sspai',   name: '少数派',     url: 'https://rsshub.app/sspai/index',           tagClass: 'sspai' },
 ];
 
 async function fetchSource(source) {
@@ -40,12 +37,7 @@ async function fetchSource(source) {
     console.log(`[${source.name}] 成功: ${items.length} 条`);
     return items;
   } catch (err) {
-    // 调试：如果是V2EX，把错误原因打出来方便排查
-    if (source.id === 'v2ex') {
-      console.error(`[${source.name}] 失败: ${err.message} (通常是返回了HTML验证页而非XML)`);
-    } else {
-      console.error(`[${source.name}] 失败: ${err.message}`);
-    }
+    console.error(`[${source.name}] 失败: ${err.message}`);
     return [];
   }
 }
@@ -70,7 +62,6 @@ async function main() {
   
   let allItems = results.flat();
   
-  // 去重
   const seen = new Set();
   allItems = allItems.filter(i => {
     if (!i.link || seen.has(i.link)) return false;
@@ -78,23 +69,22 @@ async function main() {
     return true;
   });
 
-  // 时间倒序
   allItems.sort((a, b) => {
     if (isNaN(a.date)) return 1;
     if (isNaN(b.date)) return -1;
     return b.date - a.date;
   });
 
-  // 每源限 15 条，防止 arXiv 刷屏
   const perSource = {};
   allItems = allItems.filter(i => {
     perSource[i.source] = (perSource[i.source] || 0) + 1;
     return perSource[i.source] <= 15;
   });
 
-  const successCount = SOURCES.length - results.filter((r, idx) => r.length === 0 && results[idx] === r).length; // 粗略统计
+  const successCount = results.filter(r => r.length > 0).length;
   const buildTime = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 
+  // ============ 关键修复：HTML 模板 ============
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -127,6 +117,7 @@ h1{font-size:2rem;margin-bottom:8px}.subtitle{color:var(--text2);font-size:.9rem
 .tag.deepmind{background:rgba(66,133,244,.15);color:#4285f4;border-color:rgba(66,133,244,.3)}
 .tag.arxiv{background:rgba(179,27,27,.15);color:#b31b1b;border-color:rgba(179,27,27,.3)}
 .empty{text-align:center;padding:60px;color:var(--text2)}
+#empty-tip{display:none}
 </style>
 </head>
 <body>
@@ -136,6 +127,7 @@ h1{font-size:2rem;margin-bottom:8px}.subtitle{color:var(--text2);font-size:.9rem
   <div class="subtitle">聚合 V2EX · HN · 阮一峰 · OpenAI · DeepMind · arXiv</div>
   <div class="meta-info">
     <span><span class="status-dot"></span>构建于 ${buildTime}</span>
+    <span>${successCount}/${SOURCES.length} 个源在线</span>
     <span>共 ${allItems.length} 条</span>
   </div>
 </header>
@@ -159,19 +151,37 @@ ${allItems.length ? allItems.map(i => `
   </a>
 `).join('') : '<div class="empty">暂无内容</div>'}
 </div>
+<div id="empty-tip" class="empty">该分类下暂无内容</div>
 </div>
 <script>
-const allCards = Array.from(document.querySelectorAll('.card'));
+// ============ 关键修复：filter 不再替换 innerHTML ============
 function filter(type){
+  // 更新按钮状态
   document.querySelectorAll('.controls .btn').forEach(b=>b.classList.remove('active'));
   event.target.classList.add('active');
-  const show = type==='all' ? allCards : type==='ai' 
-    ? allCards.filter(c=>['openai','deepmind','arxiv-ai','arxiv-ml'].includes(c.dataset.source))
-    : allCards.filter(c=>c.dataset.source===type);
-  allCards.forEach(c=>c.style.display='none');
+  
+  // 每次从当前 DOM 重新获取卡片（避免旧引用失效）
+  const cards = Array.from(document.querySelectorAll('#grid .card'));
+  
+  const show = type==='all' ? cards : type==='ai' 
+    ? cards.filter(c=>['openai','deepmind','arxiv-ai','arxiv-ml'].includes(c.dataset.source))
+    : cards.filter(c=>c.dataset.source===type);
+  
+  // 只切换 display，不删 DOM
+  cards.forEach(c=>c.style.display='none');
   show.forEach(c=>c.style.display='block');
-  document.getElementById('grid').style.display = show.length?'grid':'block';
-  if(!show.length) document.getElementById('grid').innerHTML = '<div class="empty">该分类下暂无内容</div>';
+  
+  const grid = document.getElementById('grid');
+  const emptyTip = document.getElementById('empty-tip');
+  
+  if(show.length === 0){
+    grid.style.display = 'none';
+    emptyTip.style.display = 'block';
+    emptyTip.textContent = type==='all' ? '暂无内容' : '该分类下暂无内容';
+  } else {
+    grid.style.display = 'grid';
+    emptyTip.style.display = 'none';
+  }
 }
 </script>
 </body>
@@ -183,10 +193,9 @@ function filter(type){
   console.log(`生成完毕: ${allItems.length} 条 → dist/index.html`);
 }
 
-// ============ 关键修复在这里 ============
 main().then(() => {
   console.log('脚本执行完成，强制退出');
-  process.exit(0);  // 切断所有挂起的 HTTP keep-alive 连接
+  process.exit(0);
 }).catch(e => {
   console.error(e);
   process.exit(1);
