@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const parser = new Parser({
-  timeout: 15000,
+  timeout: 10000, // RSSHub 公共实例不给太多耐心，10s 足够
   headers: {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     'Accept': 'application/rss+xml,application/atom+xml,application/xml,text/xml,*/*;q=0.9',
@@ -12,7 +12,8 @@ const parser = new Parser({
   }
 });
 
-const SOURCES = [
+// ============ 直连源（官方 RSS，url 必填） ============
+const DIRECT_SOURCES = [
   { id: 'v2ex',     name: 'V2EX',       url: 'https://www.v2ex.com/feed/tab/hot.xml',    tagClass: 'v2ex' },
   { id: 'hn',       name: 'HackerNews', url: 'https://hnrss.org/frontpage',              tagClass: 'hn' },
   { id: 'ruanyf',   name: '阮一峰',     url: 'https://www.ruanyifeng.com/blog/atom.xml', tagClass: 'ruanyf' },
@@ -22,24 +23,78 @@ const SOURCES = [
   { id: 'arxiv-ml', name: 'arXiv ML',   url: 'https://rss.arxiv.org/rss/cs.LG',        tagClass: 'arxiv' },
 ];
 
+// ============ RSSHub 公共实例池 ============
+const RSSHUB_INSTANCES = [
+  'https://rsshub.rssforever.com',
+  'https://rsshub.feeded.xyz',
+  'https://hub.slarker.me',
+  'https://rsshub.liumingye.cn',
+  'https://rsshub-instance.zeabur.app',
+  'https://rss.fatpandac.com',
+  'https://rsshub.pseudoyu.com',
+  'https://rsshub.friesport.ac.cn',
+  'https://rsshub.atgw.io',
+  'https://rsshub.rss.tips',
+  'https://rsshub.mubibai.com',
+  'https://rsshub.ktachibana.party',
+  'https://rsshub.woodland.cafe',
+  'https://rsshub.aierliz.xyz',
+];
+
+// ============ RSSHub 源（只写 route，不写完整域名） ============
+const RSSHUB_SOURCES = [
+  { id: 'ithome',   name: 'IT之家',     route: '/ithome/rank',                    tagClass: 'ithome' },
+  { id: 'sspai',    name: '少数派',     route: '/sspai/index',                    tagClass: 'sspai' },
+  { id: 'zhihu',    name: '知乎热榜',   route: '/zhihu/hotlist',                  tagClass: 'zhihu' },
+  { id: 'github',   name: 'GitHub Trending', route: '/github/trending/daily/any', tagClass: 'github' },
+  { id: 'solidot',  name: 'Solidot',    route: '/solidot/www',                    tagClass: 'solidot' },
+  { id: 'juejin',   name: '掘金热榜',   route: '/juejin/hot/articles',            tagClass: 'juejin' },
+  { id: 'cnblogs',  name: '博客园',     route: '/cnblogs/aggsite/topdiggs',       tagClass: 'cnblogs' },
+  { id: 'oschina',  name: '开源中国',   route: '/oschina/news',                   tagClass: 'oschina' },
+  { id: 'huxiu',    name: '虎嗅',       route: '/huxiu/article',                  tagClass: 'huxiu' },
+  { id: 'kr36',     name: '36氪',       route: '/36kr/motors',                    tagClass: 'kr36' },
+];
+
+const SOURCES = [...DIRECT_SOURCES, ...RSSHUB_SOURCES];
+
+// ============ 抓取逻辑：直连直接请求，RSSHub 轮询实例池 ============
 async function fetchSource(source) {
-  try {
-    const feed = await parser.parseURL(source.url);
-    const items = feed.items.map(item => ({
-      title: (item.title || '无标题').trim(),
-      link: item.link || item.guid || '',
-      date: new Date(item.pubDate || item.isoDate || 0),
-      source: source.id,
-      sourceName: source.name,
-      tagClass: source.tagClass,
-      desc: (item.contentSnippet || item.content || '').slice(0, 220)
-    }));
-    console.log(`[${source.name}] 成功: ${items.length} 条`);
-    return items;
-  } catch (err) {
-    console.error(`[${source.name}] 失败: ${err.message}`);
-    return [];
+  const urls = [];
+  if (source.url) {
+    urls.push(source.url);
+  } else if (source.route) {
+    for (const base of RSSHUB_INSTANCES) {
+      urls.push(base + source.route);
+    }
   }
+
+  let lastErr = '';
+  for (const url of urls) {
+    try {
+      const feed = await parser.parseURL(url);
+      // 过滤掉无标题/无链接的脏数据
+      const items = feed.items
+        .filter(item => item.title && (item.link || item.guid))
+        .map(item => ({
+          title: item.title.trim(),
+          link: item.link || item.guid,
+          date: new Date(item.pubDate || item.isoDate || 0),
+          source: source.id,
+          sourceName: source.name,
+          tagClass: source.tagClass,
+          desc: (item.contentSnippet || item.content || '').slice(0, 220)
+        }));
+      console.log(`[${source.name}] 成功 (${url}) → ${items.length} 条`);
+      return items;
+    } catch (e) {
+      lastErr = e.message;
+      // 只打印失败域名，不打完整 URL 避免日志太长
+      const host = new URL(url).hostname;
+      console.error(`[${source.name}] ${host} 失败: ${e.message}`);
+    }
+  }
+  console.error(`[${source.name}] 所有端点均失败，最后错误: ${lastErr}`);
+  return [];
 }
 
 function formatRelative(date) {
@@ -84,7 +139,10 @@ async function main() {
   const successCount = results.filter(r => r.length > 0).length;
   const buildTime = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 
-  // ============ 关键修复：HTML 模板 ============
+  const allBtns = SOURCES.map(s => 
+    `<button class="btn" onclick="filter('${s.id}')">${s.name}</button>`
+  ).join('');
+
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -116,6 +174,16 @@ h1{font-size:2rem;margin-bottom:8px}.subtitle{color:var(--text2);font-size:.9rem
 .tag.openai{background:rgba(16,163,127,.15);color:#10a37f;border-color:rgba(16,163,127,.3)}
 .tag.deepmind{background:rgba(66,133,244,.15);color:#4285f4;border-color:rgba(66,133,244,.3)}
 .tag.arxiv{background:rgba(179,27,27,.15);color:#b31b1b;border-color:rgba(179,27,27,.3)}
+.tag.ithome{background:rgba(255,102,0,.15);color:#ff6600;border-color:rgba(255,102,0,.3)}
+.tag.sspai{background:rgba(66,133,244,.15);color:#4285f4;border-color:rgba(66,133,244,.3)}
+.tag.zhihu{background:rgba(0,132,255,.15);color:#0084ff;border-color:rgba(0,132,255,.3)}
+.tag.github{background:rgba(36,41,46,.15);color:#adbac7;border-color:rgba(36,41,46,.3)}
+.tag.solidot{background:rgba(0,150,136,.15);color:#009688;border-color:rgba(0,150,136,.3)}
+.tag.juejin{background:rgba(30,128,255,.15);color:#1e80ff;border-color:rgba(30,128,255,.3)}
+.tag.cnblogs{background:rgba(51,51,51,.15);color:#999;border-color:rgba(51,51,51,.3)}
+.tag.oschina{background:rgba(123,179,46,.15);color:#7bb32e;border-color:rgba(123,179,46,.3)}
+.tag.huxiu{background:rgba(255,69,0,.15);color:#ff4500;border-color:rgba(255,69,0,.3)}
+.tag.kr36{background:rgba(66,133,244,.15);color:#4285f4;border-color:rgba(66,133,244,.3)}
 .empty{text-align:center;padding:60px;color:var(--text2)}
 #empty-tip{display:none}
 </style>
@@ -124,7 +192,7 @@ h1{font-size:2rem;margin-bottom:8px}.subtitle{color:var(--text2);font-size:.9rem
 <div class="container">
 <<header>
   <h1>TechDaily</h1>
-  <div class="subtitle">聚合 V2EX · HN · 阮一峰 · OpenAI · DeepMind · arXiv</div>
+  <div class="subtitle">聚合 ${SOURCES.length} 个技术源 · 每日自动更新</div>
   <div class="meta-info">
     <span><span class="status-dot"></span>构建于 ${buildTime}</span>
     <span>${successCount}/${SOURCES.length} 个源在线</span>
@@ -133,10 +201,8 @@ h1{font-size:2rem;margin-bottom:8px}.subtitle{color:var(--text2);font-size:.9rem
 </header>
 <div class="controls">
   <button class="btn active" onclick="filter('all')">全部</button>
-  <button class="btn" onclick="filter('v2ex')">V2EX</button>
-  <button class="btn" onclick="filter('hn')">HN</button>
-  <button class="btn" onclick="filter('ruanyf')">阮一峰</button>
   <button class="btn" onclick="filter('ai')">AI 专题</button>
+  ${allBtns}
 </div>
 <div id="grid" class="grid">
 ${allItems.length ? allItems.map(i => `
@@ -154,20 +220,15 @@ ${allItems.length ? allItems.map(i => `
 <div id="empty-tip" class="empty">该分类下暂无内容</div>
 </div>
 <script>
-// ============ 关键修复：filter 不再替换 innerHTML ============
 function filter(type){
-  // 更新按钮状态
   document.querySelectorAll('.controls .btn').forEach(b=>b.classList.remove('active'));
   event.target.classList.add('active');
   
-  // 每次从当前 DOM 重新获取卡片（避免旧引用失效）
   const cards = Array.from(document.querySelectorAll('#grid .card'));
-  
   const show = type==='all' ? cards : type==='ai' 
     ? cards.filter(c=>['openai','deepmind','arxiv-ai','arxiv-ml'].includes(c.dataset.source))
     : cards.filter(c=>c.dataset.source===type);
   
-  // 只切换 display，不删 DOM
   cards.forEach(c=>c.style.display='none');
   show.forEach(c=>c.style.display='block');
   
