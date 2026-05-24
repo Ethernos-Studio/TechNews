@@ -16,7 +16,7 @@ const parser = new Parser({
 const DIRECT_SOURCES = [
   { id: 'v2ex',     name: 'V2EX',       url: 'https://www.v2ex.com/feed/tab/hot.xml',    tagClass: 'v2ex' },
   { id: 'hn',       name: 'HackerNews', url: 'https://hnrss.org/frontpage',              tagClass: 'hn' },
-  { id: 'ruanyf',   name: '阮一峰',     url: 'https://www.ruanyifeng.com/blog/atom.xml', tagClass: 'ruanyf' },
+  { id: 'ruanyf',   name: '阮一峰',     url: 'https://github.com/ruanyf/weekly/releases.atom', tagClass: 'ruanyf' },
   { id: 'openai',   name: 'OpenAI',     url: 'https://openai.com/blog/rss.xml',          tagClass: 'openai' },
   { id: 'deepmind', name: 'DeepMind',   url: 'https://deepmind.google/blog/rss.xml',     tagClass: 'deepmind' },
   { id: 'arxiv-ai', name: 'arXiv AI',   url: 'https://rss.arxiv.org/rss/cs.AI',        tagClass: 'arxiv' },
